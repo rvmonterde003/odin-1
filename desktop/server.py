@@ -80,6 +80,8 @@ _detect_cy = 0
 
 _tcp_thread: threading.Thread | None = None
 _tcp_stop = threading.Event()
+_tcp_handshake = threading.Event()
+_tcp_start_gen = 0
 _udp_started = False
 _bg_threads_lock = threading.Lock()
 
@@ -172,7 +174,7 @@ def _ensure_background_threads() -> None:
         threading.Thread(target=_detect_loop, daemon=True, name="detect").start()
 
 
-def _tcp_worker(host: str) -> None:
+def _tcp_worker(host: str, start_gen: int) -> None:
     global _esp_connected, _esp_mode, _esp_arm, _esp_roll, _esp_pitch, _esp_thr, _esp_yaw, _esp_agl_mm
     sock: socket.socket | None = None
     try:
@@ -181,9 +183,12 @@ def _tcp_worker(host: str) -> None:
         sock.settimeout(5.0)
         sock.connect((host, ESP_TCP_PORT))
         sock.settimeout(0.02)
+        if start_gen != _tcp_start_gen or _tcp_stop.is_set():
+            return
         with _state_lock:
             _esp_connected = True
         SESSION.on_connect()
+        _tcp_handshake.set()
         buf = b""
         next_poll = time.monotonic()
         while not _tcp_stop.is_set():
@@ -221,6 +226,8 @@ def _tcp_worker(host: str) -> None:
     except OSError:
         pass
     finally:
+        if not _tcp_handshake.is_set():
+            _tcp_handshake.set()
         with _state_lock:
             _esp_connected = False
         if sock is not None:
@@ -231,16 +238,31 @@ def _tcp_worker(host: str) -> None:
 
 
 def _start_tcp(host: str) -> bool:
-    global _tcp_thread
+    global _tcp_thread, _tcp_start_gen, _esp_connected
     _tcp_stop.set()
     if _tcp_thread is not None and _tcp_thread.is_alive():
         _tcp_thread.join(timeout=2)
     _tcp_stop.clear()
-    _tcp_thread = threading.Thread(target=_tcp_worker, args=(host,), daemon=True, name="esp-tcp")
+    _tcp_handshake.clear()
+    _tcp_start_gen += 1
+    gen = _tcp_start_gen
+    _tcp_thread = threading.Thread(
+        target=_tcp_worker, args=(host, gen), daemon=True, name="esp-tcp"
+    )
     _tcp_thread.start()
-    time.sleep(0.05)
+    if not _tcp_handshake.wait(timeout=5.0):
+        _tcp_start_gen += 1
+        _tcp_stop.set()
+        if _tcp_thread is not None:
+            _tcp_thread.join(timeout=6.0)
+        with _state_lock:
+            _esp_connected = False
+        return False
     with _state_lock:
-        return _esp_connected
+        ok = _esp_connected
+    if not ok and _tcp_thread is not None:
+        _tcp_thread.join(timeout=2.0)
+    return ok
 
 
 class DesktopHandler(BaseHTTPRequestHandler):

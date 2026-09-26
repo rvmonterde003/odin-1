@@ -50,6 +50,15 @@ def test_connect_empty_host_not_connected(desktop_http: str) -> None:
     assert json.loads(body.decode("utf-8")) == {"ok": True, "connected": False}
 
 
+def test_connect_closed_port_not_connected(desktop_http: str) -> None:
+    body = _post(
+        f"{desktop_http}/connect",
+        json.dumps({"host": "127.0.0.1"}).encode("utf-8"),
+    )
+    assert json.loads(body.decode("utf-8")) == {"ok": True, "connected": False}
+    assert server._esp_connected is False
+
+
 def test_cmd_chase_returns_400(desktop_http: str) -> None:
     url = f"{desktop_http}/cmd"
     req = urllib.request.Request(
