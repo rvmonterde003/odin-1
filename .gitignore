@@ -1,3 +1,4 @@
+esp32/main/wifi_secrets.h
 esp32/build/
 esp32/sdkconfig
 esp32/sdkconfig.old

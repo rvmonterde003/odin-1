@@ -1,149 +1,278 @@
-"""Desktop proxy and static UI for Odin-2 chase test."""
+"""Desktop UI, video assembly, tag detection, and ESP32 command link."""
 
 from __future__ import annotations
 
-import http.client
 import json
 import mimetypes
-import os
+import re
 import socket
 import threading
-import urllib.error
-import urllib.request
-from urllib.parse import urlparse
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import cv2
+import numpy as np
+
+from detect_tag import detect_tag, make_detector
+from link import CommandSession
+from video_hub import VideoHub
 
 BIND_HOST = "127.0.0.1"
 BIND_PORT = 8770
-PI_HTTP_PORT = 8766  # overridden in tests via set_pi_http_port()
+UDP_PORT = 8765
+ESP_TCP_PORT = 8771
+STREAM_BOUNDARY = b"frame"
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-pi_host: str | None = None
-_pi_host_lock = threading.Lock()
+STATE_RE = re.compile(
+    r"^STATE (\S+) (\d+) (\d+) (\d+) (\d+) (\d+) (-?\d+)$"
+)
+
+PRESET_DEFAULTS: dict[str, int] = {
+    "bias_roll_us": 1500,
+    "bias_pitch_us": 1500,
+    "bias_yaw_us": 1500,
+    "bias_thrust_us": 1350,
+    "yaw_max_us": 80,
+    "yaw_slew_us_s": 400,
+    "roll_max_us": 30,
+    "roll_slew_us_s": 200,
+    "pitch_min_us": 0,
+    "pitch_max_us": 120,
+    "pitch_slew_us_s": 300,
+    "thrust_target_us": 40,
+    "thrust_slew_us_s": 250,
+    "hover_thrust_us": 1350,
+    "hover_slew_us_s": 2500,
+    "land_thrust_us": 1100,
+    "land_slew_us_s": 2500,
+    "action_thrust_us": 0,
+    "action_slew_us_s": 250,
+    "area_stop_px2": 0,
+    "deadband_pct": 10,
+    "lpf_ms": 150,
+    "agl_ceiling_mm": 0,
+}
+
+ALLOWED_CMDS = frozenset({"HOVER", "FOLLOW", "HOLD", "LAND", "DISARM"})
+
+_frame_ready = threading.Condition()
+SESSION = CommandSession()
+HUB = VideoHub(SESSION, frame_ready=_frame_ready)
+
+_state_lock = threading.Lock()
+_esp_connected = False
+_esp_mode = "DISARM"
+_esp_arm = 0
+_esp_roll = 0
+_esp_pitch = 0
+_esp_thr = 0
+_esp_yaw = 0
+_esp_agl_mm = 0
+_detect_seen = 0
+_detect_cx = 0
+_detect_cy = 0
+
+_tcp_thread: threading.Thread | None = None
+_tcp_stop = threading.Event()
+_tcp_handshake = threading.Event()
+_tcp_start_gen = 0
+_tcp_start_lock = threading.Lock()
+_udp_started = False
+_bg_threads_lock = threading.Lock()
 
 
-def set_pi_http_port(port: int) -> None:
-    global PI_HTTP_PORT
-    PI_HTTP_PORT = port
+def _merge_preset(data: dict[str, Any]) -> dict[str, int]:
+    out = dict(PRESET_DEFAULTS)
+    for key in PRESET_DEFAULTS:
+        if key in data:
+            out[key] = int(data[key])
+    return out
 
 
-def set_pi_host(host: str | None) -> None:
-    with _pi_host_lock:
-        global pi_host
-        if host is None:
-            pi_host = None
-            return
-        cleaned = host.strip()
-        pi_host = cleaned if cleaned else None
+def _build_state() -> dict[str, Any]:
+    with _state_lock:
+        state: dict[str, Any] = {
+            "mode": _esp_mode,
+            "arm": _esp_arm,
+            "roll": _esp_roll,
+            "pitch": _esp_pitch,
+            "thr": _esp_thr,
+            "yaw": _esp_yaw,
+            "agl_mm": _esp_agl_mm,
+            "seen": _detect_seen,
+            "cx": _detect_cx,
+            "cy": _detect_cy,
+            "esp": "connected" if _esp_connected else "disconnected",
+        }
+    fps = HUB.video_fps()
+    if fps > 0:
+        state["video_fps"] = fps
+    return state
 
 
-def get_pi_host() -> str | None:
-    with _pi_host_lock:
-        return pi_host
+def _on_detect(seen: bool, cx: int, cy: int, area: int, w: int, h: int) -> None:
+    global _detect_seen, _detect_cx, _detect_cy
+    with _state_lock:
+        _detect_seen = 1 if seen else 0
+        _detect_cx = cx
+        _detect_cy = cy
+    SESSION.on_detect(seen, cx, cy, area, w, h)
 
 
-def _pi_base() -> str | None:
-    host = get_pi_host()
-    if not host:
-        return None
-    return f"http://{host}:{PI_HTTP_PORT}"
-
-
-# One persistent HTTP/1.1 connection to the Pi, reused across requests. The Pi
-# Zero W cannot afford a new TCP connection and handler thread per poll.
-_conn_lock = threading.Lock()
-_conn: http.client.HTTPConnection | None = None
-_conn_key: tuple[str, int] | None = None
-
-
-def _drop_conn() -> None:
-    global _conn, _conn_key
-    if _conn is not None:
-        try:
-            _conn.close()
-        except OSError:
-            pass
-    _conn = None
-    _conn_key = None
-
-
-def _resolve_ipv4(host: str) -> str:
-    # Windows returns the Pi's IPv6 link-local address first for odin-1.local and
-    # http.client tries it first, costing ~2 s or the whole timeout per connect.
-    # The Pi server listens on IPv4 only, so connect to the IPv4 address.
-    try:
-        infos = socket.getaddrinfo(host, PI_HTTP_PORT, socket.AF_INET, socket.SOCK_STREAM)
-        if infos:
-            return infos[0][4][0]
-    except OSError:
-        pass
-    return host
-
-
-def _get_conn(host: str) -> http.client.HTTPConnection:
-    global _conn, _conn_key
-    key = (host, PI_HTTP_PORT)
-    if _conn is None or _conn_key != key:
-        _drop_conn()
-        _conn = http.client.HTTPConnection(_resolve_ipv4(host), PI_HTTP_PORT, timeout=5)
-        _conn_key = key
-    return _conn
-
-
-def _proxy_request(
-    method: str,
-    path: str,
-    body: bytes | None = None,
-    headers: dict[str, str] | None = None,
-) -> tuple[int, dict[str, str], bytes]:
-    host = get_pi_host()
-    if not host:
-        return (
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            {"Content-Type": "application/json"},
-            b'{"error":"disconnected"}',
-        )
-
-    send_headers = dict(headers or {})
-    if body is not None and "Content-Type" not in send_headers:
-        send_headers["Content-Type"] = "application/json"
-
-    with _conn_lock:
-        last_exc: Exception | None = None
-        for attempt in range(2):
-            conn = _get_conn(host)
-            try:
-                conn.request(method, path, body=body, headers=send_headers)
-                resp = conn.getresponse()
-                payload = resp.read()
-                status = resp.status
-                resp_headers = dict(resp.getheaders())
-                if resp.getheader("Connection", "").lower() == "close" or resp.version < 11:
-                    _drop_conn()
+def _detect_loop() -> None:
+    detector = make_detector()
+    last_gen = 0
+    while True:
+        jpeg, wh, gen, frame_epoch = HUB.take_pending_frame()
+        if jpeg is None or gen <= last_gen:
+            with _frame_ready:
+                _frame_ready.wait(timeout=1.0)
+            continue
+        while True:
+            jpeg2, wh2, gen2, epoch2 = HUB.take_pending_frame()
+            if gen2 == gen:
                 break
-            except (http.client.HTTPException, OSError) as exc:
-                # Stale keep-alive or Pi restarted: reconnect once and retry.
-                last_exc = exc
-                _drop_conn()
-        else:
-            return (
-                HTTPStatus.BAD_GATEWAY,
-                {"Content-Type": "application/json"},
-                b'{"error":"pi_unreachable"}',
-            )
+            jpeg, wh, gen, frame_epoch = jpeg2, wh2, gen2, epoch2
+        last_gen = gen
+        w, h = wh
+        arr = np.frombuffer(jpeg, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            continue
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        hit = detect_tag(gray, detector)
+        if HUB.epoch() == frame_epoch:
+            _on_detect(hit.seen, hit.cx, hit.cy, hit.area, w, h)
+        display = bgr
+        if hit.seen and hit.corners is not None:
+            pts = np.asarray(hit.corners, dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(display, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+        ok, enc = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            HUB.set_display_jpeg(enc.tobytes())
 
-    out_headers: dict[str, str] = {}
-    for key in ("Content-Type", "Content-Length"):
-        if key in resp_headers:
-            out_headers[key] = resp_headers[key]
-    if "Content-Type" not in out_headers:
-        out_headers["Content-Type"] = "application/json"
-    if "Content-Length" not in out_headers:
-        out_headers["Content-Length"] = str(len(payload))
-    return status, out_headers, payload
+
+def _udp_loop() -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", UDP_PORT))
+    while True:
+        data, _addr = sock.recvfrom(65535)
+        HUB.feed(data)
+
+
+def _ensure_background_threads() -> None:
+    global _udp_started
+    with _bg_threads_lock:
+        if _udp_started:
+            return
+        _udp_started = True
+        threading.Thread(target=_udp_loop, daemon=True, name="udp-video").start()
+        threading.Thread(target=_detect_loop, daemon=True, name="detect").start()
+
+
+def _tcp_worker(host: str, start_gen: int) -> None:
+    global _esp_connected, _esp_mode, _esp_arm, _esp_roll, _esp_pitch, _esp_thr, _esp_yaw, _esp_agl_mm
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.settimeout(5.0)
+        sock.connect((host, ESP_TCP_PORT))
+        sock.settimeout(0.02)
+        if start_gen != _tcp_start_gen or _tcp_stop.is_set():
+            return
+        with _state_lock:
+            _esp_connected = True
+        SESSION.on_connect()
+        _tcp_handshake.set()
+        buf = b""
+        next_poll = time.monotonic()
+        while not _tcp_stop.is_set():
+            for line in SESSION.take_lines():
+                sock.sendall(line.encode("utf-8") + b"\n")
+            now = time.monotonic()
+            if now >= next_poll:
+                SESSION.poll(now)
+                HUB.poll_gap(now)
+                next_poll = now + 0.02
+            try:
+                chunk = sock.recv(4096)
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text or text == "PONG":
+                    continue
+                m = STATE_RE.match(text)
+                if m:
+                    with _state_lock:
+                        _esp_mode = m.group(1)
+                        _esp_arm = int(m.group(2))
+                        _esp_roll = int(m.group(3))
+                        _esp_pitch = int(m.group(4))
+                        _esp_thr = int(m.group(5))
+                        _esp_yaw = int(m.group(6))
+                        _esp_agl_mm = int(m.group(7))
+    except OSError:
+        with _state_lock:
+            _esp_connected = False
+    finally:
+        with _state_lock:
+            _esp_connected = False
+        if start_gen == _tcp_start_gen and not _tcp_handshake.is_set():
+            _tcp_handshake.set()
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _teardown_tcp_attempt() -> None:
+    global _tcp_start_gen, _tcp_thread, _esp_connected
+    _tcp_start_gen += 1
+    _tcp_stop.set()
+    if _tcp_thread is not None:
+        _tcp_thread.join(timeout=6.0)
+    with _state_lock:
+        _esp_connected = False
+
+
+def _start_tcp(host: str) -> bool:
+    global _tcp_thread, _tcp_start_gen
+    with _tcp_start_lock:
+        _tcp_stop.set()
+        if _tcp_thread is not None and _tcp_thread.is_alive():
+            _tcp_thread.join(timeout=2)
+        _tcp_stop.clear()
+        _tcp_handshake.clear()
+        _tcp_start_gen += 1
+        gen = _tcp_start_gen
+        _tcp_thread = threading.Thread(
+            target=_tcp_worker, args=(host, gen), daemon=True, name="esp-tcp"
+        )
+        _tcp_thread.start()
+        if not _tcp_handshake.wait(timeout=5.0):
+            _teardown_tcp_attempt()
+            return False
+        with _state_lock:
+            ok = _esp_connected
+        if not ok:
+            _teardown_tcp_attempt()
+            return False
+        return True
 
 
 class DesktopHandler(BaseHTTPRequestHandler):
@@ -166,51 +295,39 @@ class DesktopHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length else b""
 
     def do_GET(self) -> None:
+        _ensure_background_threads()
         path = urlparse(self.path).path
         if path == "/state":
-            status, headers, body = _proxy_request("GET", "/state")
-            self.send_response(status)
-            for key, value in headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_json(HTTPStatus.OK, _build_state())
             return
 
         if path == "/stream":
-            base = _pi_base()
-            if base is None:
-                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"disconnected")
-                return
-
-            # IPv4 explicitly: see _resolve_ipv4. And read1() below returns whatever
-            # has arrived instead of blocking for a full 64 KB block, which with
-            # ~1 KB frames meant seconds of nothing, then a burst.
-            url = f"http://{_resolve_ipv4(get_pi_host() or '')}:{PI_HTTP_PORT}/stream"
+            self.send_response(HTTPStatus.OK)
+            self.send_header(
+                "Content-Type",
+                f"multipart/x-mixed-replace; boundary={STREAM_BOUNDARY.decode('ascii')}",
+            )
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            last_gen = -1
             try:
-                req = urllib.request.Request(url)
-                resp = urllib.request.urlopen(req, timeout=5)
-            except OSError:
-                self.send_response(HTTPStatus.BAD_GATEWAY)
-                self.end_headers()
-                return
-
-            try:
-                self.send_response(resp.status)
-                for key in ("Content-Type", "Cache-Control", "Pragma"):
-                    if key in resp.headers:
-                        self.send_header(key, resp.headers[key])
-                self.end_headers()
                 while True:
-                    chunk = resp.read1(65536)
-                    if not chunk:
+                    waited = HUB.wait_display(last_gen, timeout=1.0)
+                    if waited is None:
+                        continue
+                    jpeg, last_gen = waited
+                    try:
+                        self.wfile.write(b"--" + STREAM_BOUNDARY + b"\r\n")
+                        self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                        self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii"))
+                        self.wfile.write(jpeg)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
                         break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-            finally:
-                resp.close()
+            except OSError:
+                pass
             return
 
         if path in ("/", "/index.html"):
@@ -231,59 +348,55 @@ class DesktopHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if self.path == "/connect":
+        _ensure_background_threads()
+        path = urlparse(self.path).path
+        if path == "/connect":
             raw = self._read_body()
             try:
                 data = json.loads(raw.decode("utf-8") if raw else "{}")
             except json.JSONDecodeError:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
                 return
-            set_pi_host(data.get("host"))
-            # Connected means the Pi answered /state, not just that a host was typed.
-            reachable = False
-            if get_pi_host() is not None:
-                status, _headers, _body = _proxy_request("GET", "/state")
-                reachable = status == HTTPStatus.OK
-            self._send_json(HTTPStatus.OK, {"ok": True, "connected": reachable})
+            host = str(data.get("host", "")).strip()
+            connected = False
+            if host:
+                connected = _start_tcp(host)
+            self._send_json(HTTPStatus.OK, {"ok": True, "connected": connected})
             return
 
-        if self.path == "/preset":
-            body = self._read_body()
-            status, headers, out = _proxy_request(
-                "POST",
-                "/preset",
-                body=body,
-                headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
-            )
-            self.send_response(status)
-            for key, value in headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(out)
+        if path == "/preset":
+            raw = self._read_body()
+            try:
+                data = json.loads(raw.decode("utf-8") if raw else "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+                return
+            if not isinstance(data, dict):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+                return
+            SESSION.on_preset(_merge_preset(data))
+            self._send_json(HTTPStatus.OK, {"ok": True})
             return
 
-        if self.path == "/heartbeat":
-            status, headers, out = _proxy_request("POST", "/heartbeat", body=b"{}", headers={"Content-Type": "application/json"})
-            self.send_response(status)
-            for key, value in headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(out)
+        if path == "/heartbeat":
+            SESSION.on_browser_heartbeat(time.monotonic())
+            self._send_json(HTTPStatus.OK, _build_state())
             return
 
-        if self.path == "/cmd":
-            body = self._read_body()
-            status, headers, out = _proxy_request(
-                "POST",
-                "/cmd",
-                body=body,
-                headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
-            )
-            self.send_response(status)
-            for key, value in headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(out)
+        if path == "/cmd":
+            raw = self._read_body()
+            try:
+                data = json.loads(raw.decode("utf-8") if raw else "{}")
+            except json.JSONDecodeError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
+                return
+            cmd = str(data.get("cmd", "")).upper()
+            if cmd not in ALLOWED_CMDS:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_cmd"})
+                return
+            w, h = HUB.last_frame_size()
+            SESSION.on_cmd(cmd, w, h)
+            self._send_json(HTTPStatus.OK, {"ok": True})
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -313,6 +426,7 @@ def make_server(
 
 
 def run(host: str = BIND_HOST, port: int = BIND_PORT) -> None:
+    _ensure_background_threads()
     httpd = make_server(host, port)
     print(f"Odin desktop UI http://{host}:{port}/")
     httpd.serve_forever()

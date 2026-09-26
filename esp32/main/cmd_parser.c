@@ -144,17 +144,20 @@ void cmd_parse_line(const char *line, char *reply, size_t reply_len)
         int cx;
         int cy;
         int area;
+        int w;
+        int h;
         if (!parse_mode_word(&q, mode_word, sizeof(mode_word)) ||
             !parse_int_field(&q, &cx) || !parse_int_field(&q, &cy) ||
-            !parse_int_field(&q, &area)) {
+            !parse_int_field(&q, &area) || !parse_int_field(&q, &w) ||
+            !parse_int_field(&q, &h) || w <= 0 || h <= 0) {
             flight_state_unlock();
             return;
         }
         s->tag.cx = cx;
         s->tag.cy = cy;
         s->tag.area = area;
-        s->tag.w = 320;
-        s->tag.h = 320;
+        s->tag.w = w;
+        s->tag.h = h;
         s->tag.seen = (cx != 0 || cy != 0 || area != 0) ? 1 : 0;
         s->tag.last_ms = flight_now_ms();
         if (strcmp(mode_word, "DISARM") == 0) {

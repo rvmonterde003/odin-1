@@ -188,13 +188,13 @@
   <div class="page">
     <header>
       <h1>Odin-2 · chase</h1>
-      <p class="sub">320×320 AprilTag · desktop proxy only</p>
+      <p class="sub">640×640 AprilTag · this PC detects</p>
     </header>
 
     <div class="connect-row card" style="padding: 1rem;">
       <div class="field">
-        <label for="pi_host">Pi host</label>
-        <input type="text" id="pi_host" name="pi_host" value="" autocomplete="off" spellcheck="false" placeholder="e.g. 192.168.1.42">
+        <label for="esp_host">ESP32 host</label>
+        <input type="text" id="esp_host" name="esp_host" value="" autocomplete="off" spellcheck="false" placeholder="e.g. 192.168.1.42">
       </div>
       <button type="button" id="connect_btn">Connect</button>
     </div>
@@ -270,7 +270,7 @@
     ];
 
     const els = {
-      piHost: document.getElementById("pi_host"),
+      espHost: document.getElementById("esp_host"),
       connectBtn: document.getElementById("connect_btn"),
       streamImg: document.getElementById("stream_img"),
       connPill: document.getElementById("conn_pill"),
@@ -334,8 +334,8 @@
       }
     }
 
-    async function connectPi() {
-      const host = els.piHost.value.trim();
+    async function connectEsp() {
+      const host = els.espHost.value.trim();
       try {
         const res = await fetch("/connect", {
           method: "POST",
@@ -357,11 +357,11 @@
     }
 
     function formatState(state) {
-      if (state.error === "disconnected" || state.error === "pi_unreachable") {
-        els.connPill.textContent = "Pi unreachable";
+      if (state.esp === "disconnected") {
+        setConnected(false);
+        els.connPill.textContent = "ESP disconnected";
         els.connPill.classList.remove("ok", "mut");
         els.connPill.classList.add("warn");
-        return;
       }
       const mode = state.mode ?? "—";
       const arm = state.arm ?? "—";
@@ -369,8 +369,12 @@
       const seen = state.seen ?? state.tag_seen ?? "—";
       const cx = state.cx ?? "—";
       const cy = state.cy ?? "—";
-      els.meta.textContent =
+      let meta =
         "mode " + mode + " · arm " + arm + " · agl " + agl + " mm · tag " + seen + " · cx " + cx + " · cy " + cy;
+      if (state.video_fps != null) {
+        meta += " · video " + state.video_fps;
+      }
+      els.meta.textContent = meta;
     }
 
     async function pollState() {
@@ -378,23 +382,20 @@
         const res = await fetch("/state");
         if (!res.ok) {
           if (!connected) {
-            els.meta.textContent = "Disconnected — set Pi host and connect";
+            els.meta.textContent = "Disconnected — set ESP32 host and connect";
           }
           return;
         }
         const state = await res.json();
-        if (!connected && !state.error) {
-          setConnected(true);
-        }
         formatState(state);
       } catch (_) {
         if (!connected) {
-          els.meta.textContent = "Disconnected — set Pi host and connect";
+          els.meta.textContent = "Disconnected — set ESP32 host and connect";
         }
       }
     }
 
-    els.connectBtn.addEventListener("click", connectPi);
+    els.connectBtn.addEventListener("click", connectEsp);
 
     for (const id of PRESET_IDS) {
       document.getElementById(id).addEventListener("change", postPreset);
@@ -421,10 +422,7 @@
       }
     });
 
-    // One request per tick. While connected, POST /heartbeat feeds the Pi's
-    // 500 ms watchdog and returns the state in the same round trip. Before
-    // connecting, GET /state just reports disconnected. 200 ms keeps a 300 ms
-    // margin on the watchdog and is one fifth of the old traffic.
+    // While connected, POST /heartbeat returns state; otherwise GET /state.
     let ticking = false;
     async function tick() {
       if (ticking) return;
