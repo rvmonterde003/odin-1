@@ -1,6 +1,6 @@
 #include "pinout.h"
 #include "flight_state.h"
-#include "pi_uart.h"
+#include "wifi_link.h"
 #include "crsf_tx.h"
 #include "sensors.h"
 #include "chase.h"
@@ -78,17 +78,16 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "odin2 starting");
     flight_state_init();
-    ESP_ERROR_CHECK(pi_uart_init());
+    wifi_link_start();
     ESP_ERROR_CHECK(crsf_tx_init());
 
     if (sensors_init() != ESP_OK) {
         ESP_LOGW(TAG, "sensors init partial failure");
     }
 
-    xTaskCreatePinnedToCore(pi_uart_task, "pi_uart", 6144, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(sensors_task, "sensors", 8192, NULL, 6, NULL, 0);
     xTaskCreatePinnedToCore(crsf_pilot_task, "crsf_pilot", 4096, NULL, 8, NULL, 1);
 
-    ESP_LOGI(TAG, "tasks running Pi %d CRSF %d sensors %d Hz",
-             PI_UART_BAUD, CRSF_UART_BAUD, SENSORS_TASK_HZ);
+    ESP_LOGI(TAG, "tasks running CRSF %d sensors %d Hz",
+             CRSF_UART_BAUD, SENSORS_TASK_HZ);
 }
