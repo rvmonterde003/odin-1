@@ -129,16 +129,16 @@ def _detect_loop() -> None:
     detector = make_detector()
     last_gen = 0
     while True:
-        with _frame_ready:
-            _frame_ready.wait(timeout=1.0)
-        jpeg, wh, gen = HUB.take_pending_frame()
-        if jpeg is None or gen == last_gen:
+        jpeg, wh, gen, frame_epoch = HUB.take_pending_frame()
+        if jpeg is None or gen <= last_gen:
+            with _frame_ready:
+                _frame_ready.wait(timeout=1.0)
             continue
         while True:
-            jpeg2, wh2, gen2 = HUB.take_pending_frame()
+            jpeg2, wh2, gen2, epoch2 = HUB.take_pending_frame()
             if gen2 == gen:
                 break
-            jpeg, wh, gen = jpeg2, wh2, gen2
+            jpeg, wh, gen, frame_epoch = jpeg2, wh2, gen2, epoch2
         last_gen = gen
         w, h = wh
         arr = np.frombuffer(jpeg, dtype=np.uint8)
@@ -147,7 +147,8 @@ def _detect_loop() -> None:
             continue
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         hit = detect_tag(gray, detector)
-        _on_detect(hit.seen, hit.cx, hit.cy, hit.area, w, h)
+        if HUB.epoch() == frame_epoch:
+            _on_detect(hit.seen, hit.cx, hit.cy, hit.area, w, h)
         display = bgr
         if hit.seen and hit.corners is not None:
             pts = np.asarray(hit.corners, dtype=np.int32).reshape(-1, 1, 2)

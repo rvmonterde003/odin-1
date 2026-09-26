@@ -31,6 +31,7 @@ class VideoHub:
         self._pending_jpeg: bytes | None = None
         self._pending_wh: tuple[int, int] = (0, 0)
         self._pending_gen = 0
+        self._epoch = 0
         self._display_jpeg: bytes | None = None
         self._display_gen = 0
         self._stream_cv = threading.Condition()
@@ -70,6 +71,7 @@ class VideoHub:
             self._pending_jpeg = frame.jpeg
             self._pending_wh = (frame.width, frame.height)
             self._pending_gen += 1
+            self._epoch += 1
             self._frame_times.append(now)
             cutoff = now - 1.0
             while self._frame_times and self._frame_times[0] < cutoff:
@@ -94,6 +96,8 @@ class VideoHub:
             return
         self._last_gap_poll_at = now
         w, h = self._last_wh
+        with self._lock:
+            self._epoch += 1
         self._session.on_gap(w, h)
 
     def video_fps(self) -> int:
@@ -117,9 +121,13 @@ class VideoHub:
         self._last_complete_at = now
         self._last_gap_poll_at = None
 
-    def take_pending_frame(self) -> tuple[bytes | None, tuple[int, int], int]:
+    def epoch(self) -> int:
         with self._lock:
-            return self._pending_jpeg, self._pending_wh, self._pending_gen
+            return self._epoch
+
+    def take_pending_frame(self) -> tuple[bytes | None, tuple[int, int], int, int]:
+        with self._lock:
+            return self._pending_jpeg, self._pending_wh, self._pending_gen, self._epoch
 
     def set_display_jpeg(self, jpeg: bytes) -> None:
         with self._lock:
