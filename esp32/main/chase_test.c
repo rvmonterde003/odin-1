@@ -415,6 +415,23 @@ static int test_ceiling(void)
     return 0;
 }
 
+static int test_frame_size_center(void)
+{
+    chase_params_t p;
+    hold_state_t hold;
+    chase_params_set_defaults(&p);
+    hold_state_init(&hold);
+    p.area_stop_px2 = 1000;
+    tag_state_t small = {.seen = 1, .cx = 160, .cy = 160, .w = 320, .h = 320, .area = 1000};
+    int err = expect_sticks(ODIN_MODE_CHASE, &p, &small, &hold, 0,
+                            1500, 1500, 1500, 1350, "center 320 stop");
+    p.area_stop_px2 = 4000;
+    tag_state_t big = {.seen = 1, .cx = 320, .cy = 320, .w = 640, .h = 640, .area = 4000};
+    err |= expect_sticks(ODIN_MODE_CHASE, &p, &big, &hold, 0,
+                         1500, 1500, 1500, 1350, "center 640 stop");
+    return err;
+}
+
 int main(void)
 {
     chase_params_t p;
@@ -471,6 +488,7 @@ int main(void)
     err |= test_hard_limits();
     err |= test_lpf();
     err |= test_ceiling();
+    err |= test_frame_size_center();
 
     if (err != 0) {
         return 1;
