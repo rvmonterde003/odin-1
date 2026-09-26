@@ -70,4 +70,5 @@ class Assembler:
         jpeg = b"".join(self._parts[i] for i in range(self._count))
         self._done = frame_id
         self._parts = {}
+        self._count = 0
         return Assembled(frame_id, width, height, jpeg), dropped
