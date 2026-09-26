@@ -1,6 +1,6 @@
 # Odin-2
 
-Indoor AprilTag chase test for the KD aircraft. Desktop sends keys and presets. The Pi finds the tag. The ESP32 turns that into CRSF sticks. This folder is the whole flight stack for that test.
+Indoor AprilTag chase test for the KD aircraft. This PC runs AprilTag detection and sends keys and presets. The Pi captures and streams video. The ESP32 turns targets into CRSF sticks. This folder is the whole flight stack for that test.
 
 `SPEC.md` is the numeric contract. `UNDERSTANDING.md` is the original brief. This file is the handoff for another machine. Where they disagree, the code and the notes below are the later truth. A few older sentences in `SPEC.md` still say `CMD` or `STATE CHASE`; the wire format is `PILOT` and the mode string is `FOLLOW`.
 
@@ -10,33 +10,42 @@ Do not modify the sibling repos `full-autonomous` or `base-tracking`. Do not cop
 
 The flight computer in the airframe is a **Raspberry Pi Zero W** (Nanya DRAM on the board), not a Pi Zero 2 W. It is 32-bit only (`armv6l`). Raspberry Pi OS Lite 32-bit (Debian Trixie) is the image that boots. The 64-bit Lite image does not boot this board (green LED flashes 7 times: kernel not found).
 
-The camera is the official **Raspberry Pi AI Camera, Sony IMX500**. It is used as a normal camera. AprilTag runs on the Pi CPU with OpenCV ArUco, not on the IMX500 neural processor.
+The camera is the official **Raspberry Pi AI Camera, Sony IMX500**. It is used as a normal camera. AprilTag runs on this PC with OpenCV ArUco, not on the Pi and not on the IMX500 neural processor.
 
 As of 2026-09-25 on the bench PC:
 
-- Pi hostname `odin-1`, user `odin-1`, password `odin-1`.
+- Pi hostname `odin-1`, user `odin-1`.
 - It joins this PC's hotspot SSID `VINCENTzypher`. The hotspot must stay **WPA2 only**. The Zero W cannot join WPA3.
 - Last address was `192.168.137.7`. DHCP can change it. The name is `odin-1.local`. Prefer the IPv4 address. Windows often resolves the name to IPv6 link-local first, and that path does not reach the Pi.
 - SSH is on. Wi-Fi power save is off (`wifi.powersave = 2` and `iw dev wlan0 set power_save off`).
-- UART for the ESP32 is on and the serial login console is removed. `/dev/serial0` is `ttyAMA0`. `enable_uart=1` and `dtoverlay=disable-bt` are in `/boot/firmware/config.txt`. Bluetooth is disabled so the GPIO14/15 UART baud stays stable.
+- The Pi UART to the ESP32 is not used by this branch. The wiring may still be present on the bench. `enable_uart=1` and `dtoverlay=disable-bt` remain in `/boot/firmware/config.txt` from earlier work.
 - Camera auto-detect does not see the IMX500 on this Zero W. `/boot/firmware/config.txt` has `camera_auto_detect` commented out and `dtoverlay=imx500` set. After that, `rpicam-hello --list-cameras` shows `imx500 [4056x3040]`. The camera RP2040 firmware was already version 15. Do not reflash that firmware.
-- Packages on the Pi: `imx500-all`, `imx500-firmware`, `python3-opencv`, `python3-picamera2`, `python3-serial`, `iw`. Code lives at `/home/odin-1/odin-2/pi`. systemd unit `odin-pi.service` is enabled.
-- The camera loop on this Zero W runs at about **2 fps**, not 30. The sensor is configured for 30 fps. The 2 fps number is the capture loop itself. The desktop stream shows those same frames. Detection reads them too.
+- Packages on the Pi: `imx500-all`, `imx500-firmware`, `python3-picamera2`, `iw`. Code lives at `/home/odin-1/odin-2/pi`. systemd unit `odin-pi.service` is enabled. Set `ODIN_DESKTOP_HOST` to this PC's hotspot IPv4 in the unit environment or shell profile; without it the service exits.
+- The camera target is **30 fps** (`ODIN_CAMERA_FPS`, default 30). On a loaded Zero W the measured loop rate may be lower. The desktop assembles the UDP JPEG stream and runs detection on the newest complete frame.
 - The ESP32 firmware has been built (`idf.py build` completed) and **has not been flashed**. Plug the ESP32 in only when asked, props off.
 
 ## Nodes
 
 ```text
-Desktop browser  127.0.0.1:8770
-    |  Wi-Fi HTTP
-Pi Zero W        :8766   camera, AprilTag, UART
-    |  UART 115200 8N1 ASCII
-ESP32-WROOM-32   project name odin2
+IMX500 on Pi Zero W
+    |  UDP JPEG chunks to this PC :8765
+This PC  127.0.0.1:8770 browser
+    |  AprilTag 36h11 id 0 on the newest complete frame
+    |  TCP ASCII to ESP32 :8771
+ESP32-WROOM-32   project name odin2 (hotspot)
     |  CRSF 420000 TX only
 SpeedyBee F405 Mini   UART1   ANGLE mode
 ```
 
-The Pi does not draw a GUI and does not compute stick microseconds. The desktop does not compute sticks either. It only sends presets and key commands. The ESP32 owns chase math, slew, CRSF, and the VL53 altitude reading.
+The Pi captures a center square, default 640×640, and sends UDP JPEG chunks to `ODIN_DESKTOP_HOST` port 8765. It does not detect and it does not speak UART. `ODIN_FRAME_SIZE` may be 640 or 960. `ODIN_JPEG_QUALITY` default 60. `ODIN_CAMERA_FPS` default 30. If `ODIN_DESKTOP_HOST` is unset, the Pi process exits.
+
+This PC runs AprilTag 36h11 id 0 and the page on `127.0.0.1:8770`. The page asks for the ESP32 host, not the Pi host. Desktop listens for video on UDP 8765.
+
+The ESP32 joins the hotspot and listens on TCP 8771. Copy `esp32/main/wifi_secrets.example.h` to `esp32/main/wifi_secrets.h` on the build machine. That file is gitignored.
+
+500 ms of command-link silence still disarms. A dropped video frame clears the target and does not disarm.
+
+The Pi does not draw a GUI. The desktop does not compute stick microseconds; it detects the tag and sends pilot lines. The ESP32 owns chase math, slew, CRSF, and the VL53 altitude reading.
 
 ## Wiring
 
@@ -81,11 +90,11 @@ Arming is not its own mode. H arms and enters hover. 1, 2, and L do nothing whil
 | L | LAND | Bias attitude. Thrust slews to land thrust. Stays armed |
 | Esc | DISARMED | Throttle 1000, AUX1 and AUX3 low, same tick |
 
-Failsafe: after the first Pi byte, 500 ms of UART silence disarms. After the first desktop POST, 500 ms without a POST makes the Pi send `PILOT DISARM 0 0 0`. The desktop posts `/heartbeat` every 200 ms while connected. GET `/state` does not count.
+Failsafe: after the first byte on the desktop-to-ESP32 TCP link, 500 ms without another received byte disarms on the ESP32. The desktop posts `/heartbeat` every 200 ms while connected; if the browser has been silent for 1000 ms, the desktop sends `CMD DISARM` once and stops `PING`. GET `/state` does not count as a heartbeat. A dropped video frame sends a miss `PILOT` line and does not disarm.
 
 ## Chase and hold
 
-Frame is 320×320. Tag is AprilTag 36h11, id 0 only. Area is the shoelace of the four corners, integer pixels squared.
+Frame is a center square, default 640×640 (`ODIN_FRAME_SIZE` 640 or 960). Tag is AprilTag 36h11, id 0 only, detected on this PC. Area is the shoelace of the four corners, integer pixels squared.
 
 ```text
 nx = (cx - w/2) / (w/2)    right positive
@@ -108,25 +117,28 @@ Action thrust, in the Hover section of the GUI: one flat extra, not an increment
 
 Slew is microseconds per second with a fractional remainder, divided by `CRSF_TASK_HZ` (100), not a hardcoded 100 in a way that would drift if that rate changes.
 
-## UART lines
+## Command link
 
-ASCII, one line, newline terminated. Pi to ESP32:
+ASCII, one line, newline terminated. Desktop to ESP32 over TCP 8771:
 
 ```text
 BIAS roll pitch yaw thrust
 CHASE yaw_max roll_max pitch_min pitch_max thr_target yaw_slew roll_slew pitch_slew thr_slew
 HTHR hover_thrust hover_slew land_thrust land_slew action_thrust action_slew
-PILOT FOLLOW cx cy area
-PILOT HOLD cx cy area
-PILOT HOVER 0 0 0
-PILOT LAND 0 0 0
-PILOT DISARM 0 0 0
+SAFE area_stop deadband_pct lpf_ms agl_ceiling_mm
+CMD HOVER
+CMD DISARM
+PILOT FOLLOW cx cy area w h
+PILOT HOLD cx cy area w h
+PILOT HOVER 0 0 0 w h
+PILOT LAND 0 0 0 w h
+PILOT DISARM 0 0 0 w h
 PING
 ```
 
-No tag: `PILOT <MODE> 0 0 0`. `PILOT` is sent on every detect pass and immediately on a mode change.
+No tag: `PILOT <MODE> 0 0 0 <w> <h>`. `PILOT` is sent on every detect pass and immediately on a mode change. Only `CMD HOVER` arms.
 
-ESP32 to Pi at 20 Hz:
+ESP32 to desktop at 20 Hz:
 
 ```text
 STATE mode arm roll pitch thr yaw agl_mm
@@ -152,14 +164,14 @@ First-flight trims are UI values, not code defaults: pitch_max about 70, thrust_
 
 ## GUI
 
-The GUI is only on the desktop. The Pi does not serve a page on port 80. Opening `http://<pi-ip>/` is connection refused. That is expected.
+The GUI is only on the desktop. The Pi does not serve HTTP. Opening `http://<pi-ip>/` is connection refused. That is expected.
 
 ```powershell
 cd desktop
 python server.py
 ```
 
-Open `http://127.0.0.1:8770/`. Type the Pi IPv4 address and press Connect. The video URL is `/stream`. The page adds a query string so the browser does not cache it. The server must ignore that query string. A direct status check is `http://<pi-ip>:8766/state`.
+Open `http://127.0.0.1:8770/`. Type the ESP32 IPv4 address on the hotspot and press Connect. The video URL is `/stream` (local MJPEG from assembled UDP frames). The page adds a query string so the browser does not cache it. The server must ignore that query string. Status is `GET http://127.0.0.1:8770/state` or the JSON returned by `POST /heartbeat` while connected.
 
 ## Pi service
 
@@ -168,13 +180,13 @@ sudo systemctl status odin-pi.service
 journalctl -u odin-pi.service -n 40 --no-pager
 ```
 
-Code path on the Pi: `/home/odin-1/odin-2/pi`. UART device: `/dev/serial0`, override with `ODIN_UART`. Camera config is in `pi/odin_pi/camera_worker.py`: sensor 2028×1520 10-bit, main 320×320 YUV420, frame duration 33333 µs, centered scaler crop. Y plane is the first 320×320 bytes. No IMX500 `.rpk` network is loaded.
+Code path on the Pi: `/home/odin-1/odin-2/pi`. Required env: `ODIN_DESKTOP_HOST` (this PC IPv4). Optional: `ODIN_FRAME_SIZE` (640 or 960, default 640), `ODIN_JPEG_QUALITY` (default 60), `ODIN_CAMERA_FPS` (default 30), `ODIN_VIDEO_PORT` (default 8765). Camera config is in `pi/odin_pi/camera_worker.py`: sensor 2028×1520 10-bit, main square YUV420 sized to `ODIN_FRAME_SIZE`, frame duration from `ODIN_CAMERA_FPS`, centered scaler crop on the 4056×3040 array. Y plane is the first side×side bytes. No IMX500 `.rpk` network is loaded.
 
 To copy a newer `pi/` tree, shut the service down, copy the files, and start it again. A camera open takes about a minute on the Zero W before `Camera started` appears in the log.
 
 ## ESP32 build
 
-Windows, ESP-IDF. Do not flash unless asked. Name the COM port first. Props off.
+Windows, ESP-IDF. Copy `esp32/main/wifi_secrets.example.h` to `esp32/main/wifi_secrets.h` and fill in the hotspot SSID and credentials there. Do not commit `wifi_secrets.h`. Do not flash unless asked. Name the COM port first. Props off.
 
 ```powershell
 . "C:\Espressif\tools\Microsoft.v6.0.2.PowerShell_profile.ps1"
