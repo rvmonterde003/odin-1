@@ -71,7 +71,7 @@ static int open_listener(void)
     return fd;
 }
 
-static void accept_client_if_pending(void)
+static void accept_client_if_pending(size_t *line_len)
 {
     if (s_listen_fd < 0) {
         return;
@@ -87,6 +87,9 @@ static void accept_client_if_pending(void)
     }
     close_client();
     s_client_fd = new_fd;
+    if (line_len) {
+        *line_len = 0;
+    }
     int nodelay = 1;
     setsockopt(s_client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     struct timeval rcv_to = {.tv_sec = 0, .tv_usec = 20000};
@@ -193,7 +196,7 @@ static void wifi_link_task(void *arg)
     const TickType_t telem_period = pdMS_TO_TICKS(1000 / TELEMETRY_HZ);
 
     for (;;) {
-        accept_client_if_pending();
+        accept_client_if_pending(&line_len);
 
         if (s_client_fd >= 0) {
             uint8_t buf[128];
@@ -204,6 +207,9 @@ static void wifi_link_task(void *arg)
                 flight_state_unlock();
                 process_rx_bytes(buf, n, line, &line_len, reply, sizeof(reply));
             } else if (n == 0) {
+                close_client();
+                line_len = 0;
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 close_client();
                 line_len = 0;
             }
