@@ -82,6 +82,7 @@ _tcp_thread: threading.Thread | None = None
 _tcp_stop = threading.Event()
 _tcp_handshake = threading.Event()
 _tcp_start_gen = 0
+_tcp_start_lock = threading.Lock()
 _udp_started = False
 _bg_threads_lock = threading.Lock()
 
@@ -224,12 +225,13 @@ def _tcp_worker(host: str, start_gen: int) -> None:
                         _esp_yaw = int(m.group(6))
                         _esp_agl_mm = int(m.group(7))
     except OSError:
-        pass
-    finally:
-        if not _tcp_handshake.is_set():
-            _tcp_handshake.set()
         with _state_lock:
             _esp_connected = False
+    finally:
+        with _state_lock:
+            _esp_connected = False
+        if start_gen == _tcp_start_gen and not _tcp_handshake.is_set():
+            _tcp_handshake.set()
         if sock is not None:
             try:
                 sock.close()
@@ -237,32 +239,39 @@ def _tcp_worker(host: str, start_gen: int) -> None:
                 pass
 
 
-def _start_tcp(host: str) -> bool:
-    global _tcp_thread, _tcp_start_gen, _esp_connected
-    _tcp_stop.set()
-    if _tcp_thread is not None and _tcp_thread.is_alive():
-        _tcp_thread.join(timeout=2)
-    _tcp_stop.clear()
-    _tcp_handshake.clear()
+def _teardown_tcp_attempt() -> None:
+    global _tcp_start_gen, _tcp_thread, _esp_connected
     _tcp_start_gen += 1
-    gen = _tcp_start_gen
-    _tcp_thread = threading.Thread(
-        target=_tcp_worker, args=(host, gen), daemon=True, name="esp-tcp"
-    )
-    _tcp_thread.start()
-    if not _tcp_handshake.wait(timeout=5.0):
-        _tcp_start_gen += 1
-        _tcp_stop.set()
-        if _tcp_thread is not None:
-            _tcp_thread.join(timeout=6.0)
-        with _state_lock:
-            _esp_connected = False
-        return False
+    _tcp_stop.set()
+    if _tcp_thread is not None:
+        _tcp_thread.join(timeout=6.0)
     with _state_lock:
-        ok = _esp_connected
-    if not ok and _tcp_thread is not None:
-        _tcp_thread.join(timeout=2.0)
-    return ok
+        _esp_connected = False
+
+
+def _start_tcp(host: str) -> bool:
+    global _tcp_thread, _tcp_start_gen
+    with _tcp_start_lock:
+        _tcp_stop.set()
+        if _tcp_thread is not None and _tcp_thread.is_alive():
+            _tcp_thread.join(timeout=2)
+        _tcp_stop.clear()
+        _tcp_handshake.clear()
+        _tcp_start_gen += 1
+        gen = _tcp_start_gen
+        _tcp_thread = threading.Thread(
+            target=_tcp_worker, args=(host, gen), daemon=True, name="esp-tcp"
+        )
+        _tcp_thread.start()
+        if not _tcp_handshake.wait(timeout=5.0):
+            _teardown_tcp_attempt()
+            return False
+        with _state_lock:
+            ok = _esp_connected
+        if not ok:
+            _teardown_tcp_attempt()
+            return False
+        return True
 
 
 class DesktopHandler(BaseHTTPRequestHandler):
