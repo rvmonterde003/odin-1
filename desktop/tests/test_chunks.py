@@ -75,6 +75,16 @@ def test_complete_frame_then_new_id_not_dropped():
     assert frame2 is not None and frame2.frame_id == 2 and frame2.jpeg == jpeg2
 
 
+def test_drop_records_partial_size():
+    jpeg = b"z" * (CHUNK_PAYLOAD + 5)
+    old = pack_chunks(1, 640, 640, jpeg)
+    new = pack_chunks(2, 960, 960, b"ok")
+    asm = Assembler()
+    asm.push(old[0])
+    asm.push(new[0])
+    assert asm.last_drop_size == (640, 640)
+
+
 def test_bad_magic_ignored():
     jpeg = b"q" * 8
     parts = pack_chunks(4, 640, 640, jpeg)

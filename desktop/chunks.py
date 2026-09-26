@@ -38,6 +38,7 @@ class Assembler:
         self._w = 0
         self._h = 0
         self._done: int | None = None
+        self.last_drop_size: tuple[int, int] | None = None
 
     def push(self, datagram: bytes) -> tuple[Assembled | None, bool]:
         if len(datagram) < _HEADER.size:
@@ -54,6 +55,7 @@ class Assembler:
         if self._id != frame_id:
             if self._id is not None and len(self._parts) < self._count:
                 dropped = True
+                self.last_drop_size = (self._w, self._h)
             self._id = frame_id
             self._count = count
             self._parts = {}
