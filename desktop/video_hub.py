@@ -31,6 +31,7 @@ class VideoHub:
         self._pending_jpeg: bytes | None = None
         self._pending_wh: tuple[int, int] = (0, 0)
         self._pending_gen = 0
+        self._pending_epoch = 0
         self._epoch = 0
         self._display_jpeg: bytes | None = None
         self._display_gen = 0
@@ -47,17 +48,24 @@ class VideoHub:
             if width and height:
                 self._last_wh = (width, height)
 
+        gap_wh: tuple[int, int] | None = None
         if dropped:
             if frame is not None:
-                self._session.on_gap(frame.width, frame.height)
+                gap_wh = (frame.width, frame.height)
             elif self._asm.last_drop_size is not None:
-                self._session.on_gap(*self._asm.last_drop_size)
+                gap_wh = self._asm.last_drop_size
 
         if frame is None:
+            if gap_wh is not None:
+                with self._lock:
+                    self._epoch += 1
+                self._session.on_gap(*gap_wh)
             return
 
         img = cv2.imdecode(np.frombuffer(frame.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is None or img.shape[1] != frame.width or img.shape[0] != frame.height:
+            with self._lock:
+                self._epoch += 1
             self._session.on_gap(frame.width, frame.height)
             return
 
@@ -72,32 +80,36 @@ class VideoHub:
             self._pending_wh = (frame.width, frame.height)
             self._pending_gen += 1
             self._epoch += 1
+            self._pending_epoch = self._epoch
             self._frame_times.append(now)
             cutoff = now - 1.0
             while self._frame_times and self._frame_times[0] < cutoff:
                 self._frame_times.popleft()
+
+        if gap_wh is not None:
+            self._session.on_gap(*gap_wh)
 
         if self._frame_ready is not None:
             with self._frame_ready:
                 self._frame_ready.notify_all()
 
     def poll_gap(self, now: float) -> None:
-        if not self._header_seen or self._last_wh is None:
-            return
-        if self._last_complete_at is not None:
-            gap_ref = self._last_complete_at
-        elif self._first_header_at is not None:
-            gap_ref = self._first_header_at
-        else:
-            return
-        if now - gap_ref < 0.05:
-            return
-        if self._last_gap_poll_at is not None and now - self._last_gap_poll_at < 0.05:
-            return
-        self._last_gap_poll_at = now
-        w, h = self._last_wh
         with self._lock:
+            if not self._header_seen or self._last_wh is None:
+                return
+            if self._last_complete_at is not None:
+                gap_ref = self._last_complete_at
+            elif self._first_header_at is not None:
+                gap_ref = self._first_header_at
+            else:
+                return
+            if now - gap_ref < 0.05:
+                return
+            if self._last_gap_poll_at is not None and now - self._last_gap_poll_at < 0.05:
+                return
             self._epoch += 1
+            self._last_gap_poll_at = now
+            w, h = self._last_wh
         self._session.on_gap(w, h)
 
     def video_fps(self) -> int:
@@ -127,7 +139,7 @@ class VideoHub:
 
     def take_pending_frame(self) -> tuple[bytes | None, tuple[int, int], int, int]:
         with self._lock:
-            return self._pending_jpeg, self._pending_wh, self._pending_gen, self._epoch
+            return self._pending_jpeg, self._pending_wh, self._pending_gen, self._pending_epoch
 
     def set_display_jpeg(self, jpeg: bytes) -> None:
         with self._lock:
