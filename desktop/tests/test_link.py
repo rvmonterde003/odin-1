@@ -29,6 +29,13 @@ def test_connect_starts_with_cmd_disarm():
     assert session.mode == "DISARM"
 
 
+def test_connect_clears_preconnect_queue():
+    session = CommandSession()
+    session.lines.append("CMD HOVER")
+    session.on_connect()
+    assert session.take_lines() == ["CMD DISARM"]
+
+
 def test_hover_sends_cmd_then_pilot():
     session = CommandSession()
     session.on_connect()

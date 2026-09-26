@@ -59,7 +59,7 @@ PRESET_DEFAULTS: dict[str, int] = {
     "agl_ceiling_mm": 0,
 }
 
-ALLOWED_CMDS = frozenset({"HOVER", "FOLLOW", "HOLD", "LAND", "DISARM", "CHASE"})
+ALLOWED_CMDS = frozenset({"HOVER", "FOLLOW", "HOLD", "LAND", "DISARM"})
 
 _frame_ready = threading.Condition()
 SESSION = CommandSession()
@@ -81,6 +81,7 @@ _detect_cy = 0
 _tcp_thread: threading.Thread | None = None
 _tcp_stop = threading.Event()
 _udp_started = False
+_bg_threads_lock = threading.Lock()
 
 
 def _merge_preset(data: dict[str, Any]) -> dict[str, int]:
@@ -163,11 +164,12 @@ def _udp_loop() -> None:
 
 def _ensure_background_threads() -> None:
     global _udp_started
-    if _udp_started:
-        return
-    _udp_started = True
-    threading.Thread(target=_udp_loop, daemon=True, name="udp-video").start()
-    threading.Thread(target=_detect_loop, daemon=True, name="detect").start()
+    with _bg_threads_lock:
+        if _udp_started:
+            return
+        _udp_started = True
+        threading.Thread(target=_udp_loop, daemon=True, name="udp-video").start()
+        threading.Thread(target=_detect_loop, daemon=True, name="detect").start()
 
 
 def _tcp_worker(host: str) -> None:
@@ -176,16 +178,16 @@ def _tcp_worker(host: str) -> None:
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.settimeout(0.05)
+        sock.settimeout(5.0)
         sock.connect((host, ESP_TCP_PORT))
+        sock.settimeout(0.02)
         with _state_lock:
             _esp_connected = True
         SESSION.on_connect()
         buf = b""
         next_poll = time.monotonic()
         while not _tcp_stop.is_set():
-            while SESSION.lines:
-                line = SESSION.lines.pop(0)
+            for line in SESSION.take_lines():
                 sock.sendall(line.encode("utf-8") + b"\n")
             now = time.monotonic()
             if now >= next_poll:

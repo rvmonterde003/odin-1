@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 
 import pytest
@@ -47,3 +48,16 @@ def test_cmd_hover_emits_cmd_then_pilot(desktop_http: str) -> None:
 def test_connect_empty_host_not_connected(desktop_http: str) -> None:
     body = _post(f"{desktop_http}/connect", json.dumps({"host": ""}).encode("utf-8"))
     assert json.loads(body.decode("utf-8")) == {"ok": True, "connected": False}
+
+
+def test_cmd_chase_returns_400(desktop_http: str) -> None:
+    url = f"{desktop_http}/cmd"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"cmd": "CHASE"}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc_info.value.code == 400

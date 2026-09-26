@@ -358,6 +358,7 @@
 
     function formatState(state) {
       if (state.esp === "disconnected") {
+        setConnected(false);
         els.connPill.textContent = "ESP disconnected";
         els.connPill.classList.remove("ok", "mut");
         els.connPill.classList.add("warn");
@@ -386,9 +387,6 @@
           return;
         }
         const state = await res.json();
-        if (!connected && !state.error) {
-          setConnected(true);
-        }
         formatState(state);
       } catch (_) {
         if (!connected) {

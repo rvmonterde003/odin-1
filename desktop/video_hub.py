@@ -23,6 +23,7 @@ class VideoHub:
         self._asm = Assembler()
         self._lock = threading.Lock()
         self._header_seen = False
+        self._first_header_at: float | None = None
         self._last_wh: tuple[int, int] | None = None
         self._last_complete_at: float | None = None
         self._last_gap_poll_at: float | None = None
@@ -38,6 +39,8 @@ class VideoHub:
     def feed(self, datagram: bytes) -> None:
         frame, dropped = self._asm.push(datagram)
         if len(datagram) >= 16:
+            if not self._header_seen:
+                self._first_header_at = time.monotonic()
             self._header_seen = True
             _, _, _, _, width, height = struct.unpack_from("<4sIHHHH", datagram)
             if width and height:
@@ -77,9 +80,15 @@ class VideoHub:
                 self._frame_ready.notify_all()
 
     def poll_gap(self, now: float) -> None:
-        if not self._header_seen or self._last_wh is None or self._last_complete_at is None:
+        if not self._header_seen or self._last_wh is None:
             return
-        if now - self._last_complete_at < 0.05:
+        if self._last_complete_at is not None:
+            gap_ref = self._last_complete_at
+        elif self._first_header_at is not None:
+            gap_ref = self._first_header_at
+        else:
+            return
+        if now - gap_ref < 0.05:
             return
         if self._last_gap_poll_at is not None and now - self._last_gap_poll_at < 0.05:
             return

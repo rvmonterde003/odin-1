@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 
 PING_INTERVAL_S = 0.1
 BROWSER_ALIVE_S = 1.0
@@ -42,6 +43,7 @@ def _hthr(preset: dict) -> str:
 
 class CommandSession:
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.lines: list[str] = []
         self.mode = "DISARM"
         self.side: int | None = None
@@ -53,26 +55,36 @@ class CommandSession:
         self._h = 0
 
     def on_connect(self) -> None:
-        self.mode = "DISARM"
-        self._silence_disarmed = False
-        self._next_ping = 0.0
-        self.lines.append("CMD DISARM")
+        with self._lock:
+            self.lines.clear()
+            self.mode = "DISARM"
+            self._silence_disarmed = False
+            self._next_ping = 0.0
+            self.lines.append("CMD DISARM")
+
+    def take_lines(self) -> list[str]:
+        with self._lock:
+            lines = self.lines
+            self.lines = []
+            return lines
 
     def note_side(self, side: int) -> None:
         if side <= 0:
             return
-        changed = self.side != side
-        self.side = side
-        if changed and self._preset is not None:
-            self.lines.append(self._safe())
+        with self._lock:
+            changed = self.side != side
+            self.side = side
+            if changed and self._preset is not None:
+                self.lines.append(self._safe())
 
     def on_preset(self, preset: dict) -> None:
         self._preset = dict(preset)
-        self.lines.append(_bias(preset))
-        self.lines.append(_chase(preset))
-        self.lines.append(_hthr(preset))
-        if self.side is not None:
-            self.lines.append(self._safe())
+        with self._lock:
+            self.lines.append(_bias(preset))
+            self.lines.append(_chase(preset))
+            self.lines.append(_hthr(preset))
+            if self.side is not None:
+                self.lines.append(self._safe())
 
     def _safe(self) -> str:
         assert self._preset is not None and self.side is not None
@@ -89,27 +101,30 @@ class CommandSession:
         if key == "CHASE":
             key = "FOLLOW"
         self._w, self._h = w, h
-        if key == "HOVER":
-            self.mode = "HOVER"
-            self.lines.append("CMD HOVER")
-            if w > 0 and h > 0:
-                self.lines.append(format_pilot_line("HOVER", 0, 0, 0, w, h))
-            return
-        if key in ("FOLLOW", "HOLD", "LAND", "DISARM"):
-            self.mode = key
-            if w > 0 and h > 0:
-                self.lines.append(format_pilot_line(key, 0, 0, 0, w, h))
+        with self._lock:
+            if key == "HOVER":
+                self.mode = "HOVER"
+                self.lines.append("CMD HOVER")
+                if w > 0 and h > 0:
+                    self.lines.append(format_pilot_line("HOVER", 0, 0, 0, w, h))
+                return
+            if key in ("FOLLOW", "HOLD", "LAND", "DISARM"):
+                self.mode = key
+                if w > 0 and h > 0:
+                    self.lines.append(format_pilot_line(key, 0, 0, 0, w, h))
 
     def on_gap(self, w: int, h: int) -> None:
         self._w, self._h = w, h
-        self.lines.append(format_pilot_line(self.mode, 0, 0, 0, w, h))
+        with self._lock:
+            self.lines.append(format_pilot_line(self.mode, 0, 0, 0, w, h))
 
     def on_detect(self, seen: bool, cx: int, cy: int, area: int, w: int, h: int) -> None:
         self._w, self._h = w, h
-        if not seen:
-            self.lines.append(format_pilot_line(self.mode, 0, 0, 0, w, h))
-            return
-        self.lines.append(format_pilot_line(self.mode, cx, cy, area, w, h))
+        with self._lock:
+            if not seen:
+                self.lines.append(format_pilot_line(self.mode, 0, 0, 0, w, h))
+                return
+            self.lines.append(format_pilot_line(self.mode, cx, cy, area, w, h))
 
     def on_browser_heartbeat(self, now: float) -> None:
         self._last_browser = now
@@ -118,12 +133,13 @@ class CommandSession:
     def poll(self, now: float) -> None:
         if self._last_browser is None:
             return
-        if now - self._last_browser >= BROWSER_ALIVE_S:
-            if not self._silence_disarmed:
-                self.mode = "DISARM"
-                self.lines.append("CMD DISARM")
-                self._silence_disarmed = True
-            return
-        if now >= self._next_ping:
-            self.lines.append("PING")
-            self._next_ping = now + PING_INTERVAL_S
+        with self._lock:
+            if now - self._last_browser >= BROWSER_ALIVE_S:
+                if not self._silence_disarmed:
+                    self.mode = "DISARM"
+                    self.lines.append("CMD DISARM")
+                    self._silence_disarmed = True
+                return
+            if now >= self._next_ping:
+                self.lines.append("PING")
+                self._next_ping = now + PING_INTERVAL_S
