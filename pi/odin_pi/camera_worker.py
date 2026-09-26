@@ -17,8 +17,23 @@ logger = logging.getLogger(__name__)
 # Measured 25 Sep 2026: 30 fps = 64% CPU, 20 fps = 43%, 15 fps = 34%.
 # ODIN_CAMERA_FPS overrides the default; the loop logs the rate it actually holds.
 SPEC_FPS = 30
-TARGET_FPS = int(os.environ.get("ODIN_CAMERA_FPS", "15"))
-FRAME_SIZE = (320, 320)
+TARGET_FPS = int(os.environ.get("ODIN_CAMERA_FPS", "30"))
+
+
+def _frame_side() -> int:
+    try:
+        side = int(os.environ.get("ODIN_FRAME_SIZE", "640"))
+    except ValueError:
+        logger.error("invalid ODIN_FRAME_SIZE")
+        raise SystemExit(1)
+    if side not in (640, 960):
+        logger.error("ODIN_FRAME_SIZE must be 640 or 960, got %d", side)
+        raise SystemExit(1)
+    return side
+
+
+_SIDE = _frame_side()
+FRAME_SIZE = (_SIDE, _SIDE)
 
 # IMX500 pixel array (ScalerCrop coordinates), not the active readout size.
 PIXEL_ARRAY_W = 4056
@@ -39,7 +54,7 @@ def publish_camera_frame(
 
 
 def extract_y_plane(yuv420: np.ndarray) -> np.ndarray:
-    """Y plane only: first 320×320 bytes of the YUV420 main buffer."""
+    """Y plane only: first side×side bytes of the YUV420 main buffer."""
     w, h = FRAME_SIZE
     flat = yuv420.reshape(-1)
     y = np.frombuffer(flat[: w * h], dtype=np.uint8)
