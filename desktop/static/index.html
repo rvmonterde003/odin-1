@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Odin-2 · chase</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --fg: #e8e8e8;
+      --mut: #8a8f98;
+      --ok: #38c172;
+      --warn: #f5a623;
+      --line: #232a36;
+      --card: #141922;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.4;
+      min-height: 100vh;
+    }
+
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1.5rem 1rem 2rem;
+    }
+
+    header {
+      margin-bottom: 1.25rem;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .sub {
+      color: var(--mut);
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .stream-wrap {
+      margin-bottom: 1.25rem;
+    }
+
+    .stream-wrap img {
+      display: block;
+      width: 100%;
+      max-width: 320px;
+      height: auto;
+      background: #000;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .field label {
+      display: block;
+      color: var(--mut);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+
+    .field input[type="text"],
+    .field input[type="number"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--fg);
+      padding: 0.45rem 0.55rem;
+      font-size: 0.875rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .connect-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: flex-end;
+      margin-bottom: 1.25rem;
+    }
+
+    .connect-row .field {
+      flex: 1 1 220px;
+    }
+
+    button {
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      padding: 0.5rem 1rem;
+    }
+
+    button:hover {
+      border-color: var(--mut);
+    }
+
+    section h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--mut);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.65rem;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-top: 1rem;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 0.35rem 0.85rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+    }
+
+    .pill.ok {
+      color: var(--ok);
+      border-color: var(--ok);
+      background: rgba(56, 193, 114, 0.12);
+    }
+
+    .pill.warn {
+      color: var(--warn);
+      border-color: var(--warn);
+      background: rgba(245, 166, 35, 0.12);
+    }
+
+    .pill.mut {
+      color: var(--mut);
+      border-color: var(--line);
+      background: rgba(138, 143, 152, 0.08);
+    }
+
+    .meta {
+      color: var(--mut);
+      font-size: 0.8125rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .keys {
+      color: var(--mut);
+      font-size: 0.8125rem;
+      margin-top: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Odin-2 · chase</h1>
+      <p class="sub">320×320 AprilTag · desktop proxy only</p>
+    </header>
+
+    <div class="connect-row card" style="padding: 1rem;">
+      <div class="field">
+        <label for="pi_host">Pi host</label>
+        <input type="text" id="pi_host" name="pi_host" value="" autocomplete="off" spellcheck="false" placeholder="e.g. 192.168.1.42">
+      </div>
+      <button type="button" id="connect_btn">Connect</button>
+    </div>
+
+    <section style="margin-bottom: 1rem;">
+      <h2>Bias (µs)</h2>
+      <div class="controls card" style="padding: 1rem;" id="bias_fields">
+        <div class="field"><label for="bias_roll_us">Roll</label><input type="number" id="bias_roll_us" value="1500"></div>
+        <div class="field"><label for="bias_pitch_us">Pitch</label><input type="number" id="bias_pitch_us" value="1500"></div>
+        <div class="field"><label for="bias_yaw_us">Yaw</label><input type="number" id="bias_yaw_us" value="1500"></div>
+        <div class="field"><label for="bias_thrust_us">Thrust</label><input type="number" id="bias_thrust_us" value="1350"></div>
+      </div>
+    </section>
+
+    <section style="margin-bottom: 1rem;">
+      <h2>Hover</h2>
+      <div class="controls card" style="padding: 1rem;" id="hover_fields">
+        <div class="field"><label for="hover_thrust_us">Hover thrust</label><input type="number" id="hover_thrust_us" value="1350"></div>
+        <div class="field"><label for="hover_slew_us_s">Hover slew</label><input type="number" id="hover_slew_us_s" value="2500"></div>
+        <div class="field"><label for="land_thrust_us">Land thrust</label><input type="number" id="land_thrust_us" value="1100"></div>
+        <div class="field"><label for="land_slew_us_s">Land slew</label><input type="number" id="land_slew_us_s" value="2500"></div>
+        <div class="field"><label for="action_thrust_us">Action thrust</label><input type="number" id="action_thrust_us" value="0"></div>
+        <div class="field"><label for="action_slew_us_s">Action slew</label><input type="number" id="action_slew_us_s" value="250"></div>
+      </div>
+    </section>
+
+    <section style="margin-bottom: 1rem;">
+      <h2>Chase</h2>
+      <div class="controls card" style="padding: 1rem;" id="chase_fields">
+        <div class="field"><label for="yaw_max_us">Yaw max</label><input type="number" id="yaw_max_us" value="80"></div>
+        <div class="field"><label for="yaw_slew_us_s">Yaw slew</label><input type="number" id="yaw_slew_us_s" value="400"></div>
+        <div class="field"><label for="roll_max_us">Roll max</label><input type="number" id="roll_max_us" value="30"></div>
+        <div class="field"><label for="roll_slew_us_s">Roll slew</label><input type="number" id="roll_slew_us_s" value="200"></div>
+        <div class="field"><label for="pitch_min_us">Pitch min</label><input type="number" id="pitch_min_us" value="0"></div>
+        <div class="field"><label for="pitch_max_us">Pitch max</label><input type="number" id="pitch_max_us" value="120"></div>
+        <div class="field"><label for="pitch_slew_us_s">Pitch slew</label><input type="number" id="pitch_slew_us_s" value="300"></div>
+        <div class="field"><label for="thrust_target_us">Thrust target</label><input type="number" id="thrust_target_us" value="40"></div>
+        <div class="field"><label for="thrust_slew_us_s">Thrust slew</label><input type="number" id="thrust_slew_us_s" value="250"></div>
+      </div>
+    </section>
+
+    <section style="margin-bottom: 1rem;">
+      <h2>Safety</h2>
+      <div class="controls card" style="padding: 1rem;" id="safety_fields">
+        <div class="field"><label for="area_stop_px2">Stop area px² (0 off)</label><input type="number" id="area_stop_px2" value="0"></div>
+        <div class="field"><label for="deadband_pct">Deadband %</label><input type="number" id="deadband_pct" value="10"></div>
+        <div class="field"><label for="lpf_ms">Target filter ms</label><input type="number" id="lpf_ms" value="150"></div>
+        <div class="field"><label for="agl_ceiling_mm">AGL ceiling mm (0 off)</label><input type="number" id="agl_ceiling_mm" value="0"></div>
+      </div>
+    </section>
+
+    <div class="card stream-wrap">
+      <img id="stream_img" src="" alt="camera stream" hidden>
+    </div>
+
+    <div class="status-row">
+      <span id="conn_pill" class="pill mut">Disconnected</span>
+      <span id="meta" class="meta">mode — · arm — · agl — · tag — · cx — · cy —</span>
+    </div>
+
+    <p class="keys">H hover · 1 follow · 2 hold · L land · Esc disarm</p>
+  </div>
+
+  <script>
+    const PRESET_IDS = [
+      "bias_roll_us", "bias_pitch_us", "bias_yaw_us", "bias_thrust_us",
+      "yaw_max_us", "yaw_slew_us_s", "roll_max_us", "roll_slew_us_s",
+      "pitch_min_us", "pitch_max_us", "pitch_slew_us_s",
+      "hover_thrust_us", "hover_slew_us_s", "land_thrust_us", "land_slew_us_s",
+      "action_thrust_us", "action_slew_us_s",
+      "thrust_target_us", "thrust_slew_us_s",
+      "area_stop_px2", "deadband_pct", "lpf_ms", "agl_ceiling_mm",
+    ];
+
+    const els = {
+      piHost: document.getElementById("pi_host"),
+      connectBtn: document.getElementById("connect_btn"),
+      streamImg: document.getElementById("stream_img"),
+      connPill: document.getElementById("conn_pill"),
+      meta: document.getElementById("meta"),
+    };
+
+    let connected = false;
+
+    function buildPreset() {
+      const preset = {};
+      for (const id of PRESET_IDS) {
+        const input = document.getElementById(id);
+        preset[id] = Number(input.value);
+      }
+      return preset;
+    }
+
+    async function postPreset() {
+      if (!connected) return;
+      try {
+        await fetch("/preset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(buildPreset()),
+        });
+      } catch (_) {
+        /* proxy not ready */
+      }
+    }
+
+    async function postCmd(cmd) {
+      if (!connected) return;
+      try {
+        await fetch("/cmd", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cmd }),
+        });
+      } catch (_) {
+        /* proxy not ready */
+      }
+    }
+
+    function isNumberInputFocused() {
+      const el = document.activeElement;
+      return el && el.tagName === "INPUT" && el.type === "number";
+    }
+
+    function setConnected(on) {
+      connected = on;
+      els.connPill.textContent = on ? "Connected" : "Disconnected";
+      els.connPill.classList.remove("ok", "warn", "mut");
+      els.connPill.classList.add(on ? "ok" : "mut");
+      if (on) {
+        els.streamImg.hidden = false;
+        els.streamImg.src = "/stream?" + Date.now();
+      } else {
+        els.streamImg.hidden = true;
+        els.streamImg.removeAttribute("src");
+        els.meta.textContent = "mode — · arm — · agl — · tag — · cx — · cy —";
+      }
+    }
+
+    async function connectPi() {
+      const host = els.piHost.value.trim();
+      try {
+        const res = await fetch("/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ host }),
+        });
+        if (!res.ok) {
+          setConnected(false);
+          return;
+        }
+        const data = await res.json();
+        setConnected(Boolean(data.connected));
+        if (data.connected) {
+          await postPreset();
+        }
+      } catch (_) {
+        setConnected(false);
+      }
+    }
+
+    function formatState(state) {
+      if (state.error === "disconnected" || state.error === "pi_unreachable") {
+        els.connPill.textContent = "Pi unreachable";
+        els.connPill.classList.remove("ok", "mut");
+        els.connPill.classList.add("warn");
+        return;
+      }
+      const mode = state.mode ?? "—";
+      const arm = state.arm ?? "—";
+      const agl = state.agl_mm ?? "—";
+      const seen = state.seen ?? state.tag_seen ?? "—";
+      const cx = state.cx ?? "—";
+      const cy = state.cy ?? "—";
+      els.meta.textContent =
+        "mode " + mode + " · arm " + arm + " · agl " + agl + " mm · tag " + seen + " · cx " + cx + " · cy " + cy;
+    }
+
+    async function pollState() {
+      try {
+        const res = await fetch("/state");
+        if (!res.ok) {
+          if (!connected) {
+            els.meta.textContent = "Disconnected — set Pi host and connect";
+          }
+          return;
+        }
+        const state = await res.json();
+        if (!connected && !state.error) {
+          setConnected(true);
+        }
+        formatState(state);
+      } catch (_) {
+        if (!connected) {
+          els.meta.textContent = "Disconnected — set Pi host and connect";
+        }
+      }
+    }
+
+    els.connectBtn.addEventListener("click", connectPi);
+
+    for (const id of PRESET_IDS) {
+      document.getElementById(id).addEventListener("change", postPreset);
+      document.getElementById(id).addEventListener("input", postPreset);
+    }
+
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        postCmd("DISARM");
+        return;
+      }
+      if (isNumberInputFocused()) {
+        return;
+      }
+      if (ev.key === "h" || ev.key === "H") {
+        postCmd("HOVER");
+      } else if (ev.key === "1") {
+        postCmd("FOLLOW");
+      } else if (ev.key === "2") {
+        postCmd("HOLD");
+      } else if (ev.key === "l" || ev.key === "L") {
+        postCmd("LAND");
+      }
+    });
+
+    // One request per tick. While connected, POST /heartbeat feeds the Pi's
+    // 500 ms watchdog and returns the state in the same round trip. Before
+    // connecting, GET /state just reports disconnected. 200 ms keeps a 300 ms
+    // margin on the watchdog and is one fifth of the old traffic.
+    let ticking = false;
+    async function tick() {
+      if (ticking) return;
+      ticking = true;
+      try {
+        if (connected) {
+          const res = await fetch("/heartbeat", { method: "POST" });
+          if (res.ok) {
+            const state = await res.json();
+            if (!state.error) formatState(state);
+          }
+        } else {
+          await pollState();
+        }
+      } catch (_) {
+        /* proxy not ready */
+      } finally {
+        ticking = false;
+      }
+    }
+
+    setConnected(false);
+    pollState();
+    setInterval(tick, 200);
+  </script>
+</body>
+</html>

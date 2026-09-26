@@ -1,0 +1,8 @@
+esp32/build/
+esp32/sdkconfig
+esp32/sdkconfig.old
+**/.pytest_cache/
+**/__pycache__/
+*.pyc
+.venv/
+venv/
